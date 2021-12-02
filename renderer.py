@@ -8,7 +8,7 @@ _root_folder = '""'
 _org_name = '""'
 license = ''
 
-def process_args(arg_key:str, args:list[str], it: int):
+def process_args(arg_key:str, args:list[str], it: int)->str:
     if(arg_key.startswith('--')):
         return arg_key + ' ' + args[it]
     return arg_key
@@ -36,14 +36,17 @@ if __name__ == "__main__":
                 continue
         else:
             if(arg_pair[0] == os.path.basename(__file__)): 
-                continue;
+                continue
             if os.path.exists(arg_pair[0]):
-                with open(arg_pair[0], "r", encoding="utf-8") as f:
-                    for line in f:
-                        license += line
+                f = open(arg_pair[0], "r", encoding="utf-8")
+                license = f.read()
+                f.close()
+                #with open(arg_pair[0], "r", encoding="utf-8") as f:
+                #    for line in f:
+                #        license += line
                 #f.close()
     if license == '':
         sys.stderr.write('No license file found. Exiting...')
         exit(1)
     #print(license.format(filename = _fname, root_folder = _root_folder, year = _year, org_name = _org_name).replace('$', ''))
-    sys.stdout.write(license.format(filename = _fname, root_folder = _root_folder, year = _year, org_name = _org_name).replace('$', ''));
+    sys.stdout.write(license.format(filename = _fname, root_folder = _root_folder, year = _year, org_name = _org_name).replace('$', ''))
