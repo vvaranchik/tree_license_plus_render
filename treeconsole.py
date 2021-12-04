@@ -1,21 +1,24 @@
+#!/usr/bin/env python3
 import os
 import sys
 import locale
 import time
 import io
 import subprocess
-import re
 
 project_path = ''
 license_path = ''
-log_path = ''
+log_file=None
 added_paths:list=list()
 
 def revert_std()->None:
     sys.stderr.flush()
+    sys.stderr.close()
     sys.stdout.flush()
     sys.stdout.close()
-    sys.stderr.close()
+    if log_file != None:
+        log_file.flush()
+        log_file.close()
     sys.stdout = sys.__stdout__
     sys.stderr = sys.__stderr__
 
@@ -32,17 +35,18 @@ def path_is_abs(p:str)->bool: return (len(p) > 1) and (p[0] == '/' or p[1] == ':
 
 def log(logtype:int, str_log:str)->None:
     cur_time = time.localtime()
-    if logtype == 0: # just log
-        sys.stdout.write("[{hours}:{minutes}:{seconds}] [LOG] {msg} \n".format(hours = cur_time.tm_hour, minutes = cur_time.tm_min, seconds = cur_time.tm_sec, msg = str_log))
+    msg = "[{hours}:{minutes}:{seconds}] [{type}] {msg} \n".format(type = "LOG" if logtype == 0 else "ERROR" if logtype == 1 else "WARNING",hours = cur_time.tm_hour, minutes = cur_time.tm_min, seconds = cur_time.tm_sec, msg = str_log)
+    if log_file != None:
+        log_file.write(msg)
+        log_file.flush()
+    if logtype == 0 or logtype == 2: # just log
+        sys.stdout.write(msg)
         sys.stdout.flush()
         return
     if logtype == 1: # log error and raise exception
-        sys.stderr.write("[{hours}:{minutes}:{seconds}] [ERROR] {msg} \n".format(hours = cur_time.tm_hour, minutes = cur_time.tm_min, seconds = cur_time.tm_sec, msg = str_log))
+        sys.stderr.write(msg)
         revert_std()
-        raise Exception(str_log)
-    if logtype == 2: # log warning and continue
-        sys.stdout.write("[{hours}:{minutes}:{seconds}] [WARN] {msg} \n".format(hours = cur_time.tm_hour, minutes = cur_time.tm_min, seconds = cur_time.tm_sec, msg = str_log))
-        sys.stdout.flush()
+        exit(1)
 
 def is_all_paths_valid(paths:list[str])->bool:
     for path in paths:
@@ -67,7 +71,7 @@ def is_licensed(fname, ftype: int)->bool:
         if head_idx != -1:
             head_tag = html_file[head_idx::]
             if head_tag.find("<!--") != -1:
-                if head_tag.find('<!-- File: "') != -1 or head_tag.find('THE SOFTWARE IS PROVIDED "AS IS"') != -1:
+                if head_tag.find('Copyright (c) ') != -1 or head_tag.find('THE SOFTWARE IS PROVIDED "AS IS"') != -1: # double check if any of license info is presented in file
                     result = True
         else:
             log(2, 'No <head> tag in ' + fname.name)
@@ -77,7 +81,7 @@ def is_licensed(fname, ftype: int)->bool:
             result = ensure_licensed(f)
     f.close()
     return result
-    
+
 def get_file_type(fname)->int:
     ext = os.path.splitext(fname.name)
     if ext[1] == ".css": return 0
@@ -85,96 +89,78 @@ def get_file_type(fname)->int:
     if ext[1] == ".sh" or ext[1] == ".py": return 2
     return -1
 
-def process_license_in_file(p:subprocess.Popen, path:str, fname, ftype:int, comment_char_start:str, comment_char_end:str='')->None:
+def process_license_in_file(p:subprocess.Popen, fname, ftype:int, comment_char_start:str, comment_char_end:str='')->None:
     std_out, std_err = p.communicate()
     if p.returncode != 0:
         log(1, std_err.strip().decode('utf-8'))
-    licensed_file = fname
-    if os.path.exists(licensed_file):
-        handle = open(licensed_file, 'r')
-        if not ensure_licensed(handle, comment_char_start):
-            log(2, 'License file "{}" does not have license and will be deleted'.format(license_file))
-            handle.close()
-            os.remove(licensed_file)
-        else:
-            log(0, 'License for file "{}" already exists. Skipping...'.format(fname))
-            handle.close()
-            return
-    with open(licensed_file, "w") as licensed:
-        newline=False
-        output = std_out.strip().decode('utf-8')
-        license_filled:list[str] = output.split('\r')
-        if len(license_filled) <= 1:
-            license_filled.clear()
-            license_filled = output.split('\n')
-            newline=True
-        f = open(path, 'r')
-        if ftype != 1:
-            first_line = True
-            for line in license_filled:
-                if newline:
-                    line += '\n'
-                if first_line and (comment_char_start == '/*' or comment_char_start == '#'):
-                    f_line = f.readline()
-                    if f_line.find('#!/') != -1: #check shebang
-                        licensed.write(f_line)
-                    first_line = False
-                    if comment_char_start == '#':
-                        line = '# ' + line
-                        licensed.write(line.replace('\n', '\n# '))
-                    else:
-                        licensed.write(comment_char_start + ' ' + line)
-                else:
-                    if comment_char_start == '#':
-                        licensed.write(line.replace('\n', '\n# '))
-                    else:
-                        licensed.write(line)
-            if comment_char_end != '':
-                licensed.write(comment_char_end + '\n')
-            else: licensed.write('\n')
-            licensed.write(f.read())
-            f.close()
-            licensed.flush()
-            licensed.close()
-        else:
-            html_file:str = f.read(-1)
-            head_idx = html_file.find("<head")
-            if head_idx != -1:
-                licensed_str = '<head ' + comment_char_start + ' '
+    try:
+        with open(fname, "r+") as licensed:
+            original_content = licensed.read()
+            licensed.seek(0)
+            output = std_out.strip().decode('utf-8')
+            license_filled:list[str] = output.split('\r')
+            if len(license_filled) <= 1:
+                license_filled.clear()
+                license_filled = output.split('\n')
+            if ftype != 1:
+                first_line = True
                 for line in license_filled:
-                    licensed_str += line
-                licensed_str += comment_char_end + '\n'
-                html_file = html_file.replace("<head", licensed_str)
-                licensed.write(html_file)
-            licensed.flush()
-            f.close()
-            licensed.close()
-        added_paths.append(path)
-        log(0, 'Created licensed file "{}"'.format(licensed_file))
+                    if not line.endswith('\n'): line += '\n'
+                    if first_line and (comment_char_start == '/*' or comment_char_start == '#'):
+                        first_line = False
+                        f_line = licensed.readline()
+                        licensed.seek(0)
+                        if f_line.find('#!/') != -1:
+                            licensed.write(f_line.endswith('\n') and f_line or f_line+'\n')
+                            original_content = original_content.replace(f_line, '')
+                        if comment_char_start == '#':
+                            line = '# ' + line
+                            licensed.write(line.replace('\n', '\n# '))
+                        else:
+                            licensed.write(comment_char_start + ' ' + line)
+                    else:
+                        if comment_char_start == '#':
+                            licensed.write(line.replace('\n', '\n# '))
+                        else:
+                            licensed.write(line)
+                if comment_char_end != '':
+                    licensed.write(comment_char_end + '\n')
+                else: licensed.write('\n')
+                licensed.write(original_content)
+                licensed.flush()
+                licensed.close()
+            else:
+                head_idx = original_content.find("<head")
+                if head_idx != -1:
+                    licensed_str = '<head ' + comment_char_start + '\n'
+                    for line in license_filled:
+                        licensed_str += line.endswith('\n') == True and line or (line + '\n')  
+                    licensed_str += comment_char_end + '\n'
+                    original_content = original_content.replace("<head", licensed_str)
+                    licensed.write(original_content)
+                licensed.flush()
+                licensed.close()
+            added_paths.append(fname)
+            log(0, 'Added license in file "{}"'.format(fname))
+    except PermissionError:
+        log(2, "Can't edit file {} (Permission denied)".format(fname))
+
 
 def try_add_license(fname)->None:
     ftype = get_file_type(fname)
-    if is_licensed(fname, ftype) != True:
-        comments = get_comment_by_type(ftype)
-        remove_count = ftype == 0 and 4 or ftype == 1 and 5 or 3
-        licensed_filename = fname.path[:len(fname.path)-remove_count] + "_licensed" + os.path.splitext(fname.name)[1]
-        cmd = [sys.executable, "renderer.py",
-               '--filename="{filename}"'.format(filename = licensed_filename),
-               '--root_folder="{root_folder}"'.format(root_folder = project_path),
-               '--year="{year}"'.format(year = str()),
-               '--org_name="{org_name}"'.format(org_name = "StackSoft"),
-               license_path]
-        p = subprocess.Popen(cmd, stdout = subprocess.PIPE, stderr = subprocess.PIPE)
-        #if ftype == 0:
-        process_license_in_file(p, fname.path, licensed_filename, ftype, comments[0], comments[1])
-        #else: 
-        #    if ftype == 2:
-        #        process_license_in_file(p, fname.path, licensed_filename, ftype, '#')
-        #    else:
-        #        if ftype == 1:
-        #            process_license_in_file(p, fname.path, licensed_filename, ftype, '<!--', '-->')
-    else: log(0, 'File "' + fname.name + '" already have license. Skipping...')
-    
+    if ftype == 0 or ftype == 1 or ftype == 2:
+        if is_licensed(fname, ftype) != True:
+            comments = get_comment_by_type(ftype)
+            cmd = [sys.executable, "renderer.py",
+                '--filename="{filename}"'.format(filename = fname.path),
+                '--root_folder="{root_folder}"'.format(root_folder = project_path),
+                '--year="{year}"'.format(year = str(2020)),
+                '--org_name="{org_name}"'.format(org_name = "StackSoft"),
+                license_path]
+            p = subprocess.Popen(cmd, stdout = subprocess.PIPE, stderr = subprocess.PIPE)
+            process_license_in_file(p, fname.path, ftype, comments[0], comments[1])
+        else: log(0, 'File "' + fname.name + '" already have license. Skipping...')
+
 def process_license(dir_path:str)->None:
     dirs: list = list()
     files: list = list()
@@ -199,27 +185,41 @@ def process_argument(arg_key:str, args:list[str], it: int)->str:
     return arg_key
 
 if __name__ == "__main__":
-    log_path = os.getcwd() + "/license.log"
+    default_log_path = os.getcwd() + "/license.log"
+    log_path = ''
     it = 0
     while it < len(sys.argv):
         arg = process_argument(sys.argv[it], sys.argv, it+1)
-        it = it + 1
+        it += 1
         if(arg == ''): exit(0)
         arg_pair = arg.split(' ')
-        if(len(arg_pair) > 1):
-            if(arg_pair[0] == '-f'):
-                license_path = arg_pair[1]
-                continue
-            if(arg_pair[0] == '-l'):
-                log_path = arg_pair[1]
-                continue
-        else:
-            if arg_pair[0] == __file__: continue
-            project_path = arg_pair[0]
+        if(arg_pair[0] == '-f'):
+            it += 1
+            license_path = arg_pair[1]
             continue
+        if(arg_pair[0] == '-l'):
+            it += 1
+            log_path = arg_pair[1]
+            continue
+        if os.getcwd() + '/' + arg_pair[0] == __file__: continue
+        project_path = arg_pair[0]
+        continue
+
     locale.setlocale(locale.LC_TIME, '')
-    #logger = open(log_path, 'w')
-    sys.stdout = sys.stderr = open(log_path, 'w')
+    if not log_path:
+        log_path = default_log_path
+    else:
+        try:
+            if path_is_abs(log_path) == False:
+                log_path = os.getcwd() + "/" + log_path
+            log_file = open(log_path, 'w')
+        except IOError:
+            log(2, "Can't open path {err_path}, trying using default {def_path}...".format(err_path = log_path, def_path = default_log_path))
+            try:
+                log_file = open(default_log_path, 'w')
+            except IOError:
+                log(2, 'Initializing log file failed')
+                pass
     if license_path == '':
         license_file_path = os.getenv("LICENSE_FILE_PATH")
         if license_file_path == None or license_file_path == '':
@@ -228,10 +228,8 @@ if __name__ == "__main__":
             license_path = license_file_path
     if path_is_abs(license_path) == False:
         license_path = os.getcwd() + "/" + license_path
-    if path_is_abs(log_path) == False:
-        log_path = os.getcwd() + "/" + log_path
     log(0, "Log file initialized")
-    if(is_all_paths_valid([project_path, license_path, log_path]) != True):
+    if(is_all_paths_valid([project_path, license_path]) != True):
         log(1, 'One of the path parametrs missing or does not exist. Exiting...')
     process_license(project_path) # main recursive function
     log(0, "Total edited files: {}".format(len(added_paths)))

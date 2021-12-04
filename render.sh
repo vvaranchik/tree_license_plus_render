@@ -91,7 +91,6 @@ if [ -f $_license ];then
     license_content=$(echo "$license_content" | sed "s%{root_folder}%${_root}%g")
     license_content=$(echo "$license_content" | tr -d '$')
     echo "${license_content}"
-    #ls -a
 else
     echo "License file '${_license}' not exist or license path was empty" 1>&2
     exit 1
