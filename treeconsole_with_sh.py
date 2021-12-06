@@ -5,19 +5,17 @@ import locale
 import time
 import io
 import subprocess
+from re import split
 
 project_path = ''
 license_path = ''
-log_file=None
+log_file:io.TextIOWrapper
 added_paths:list=list()
 
 def revert_std()->None:
-    sys.stderr.flush()
     sys.stderr.close()
-    sys.stdout.flush()
     sys.stdout.close()
     if log_file != None:
-        log_file.flush()
         log_file.close()
     sys.stdout = sys.__stdout__
     sys.stderr = sys.__stderr__
@@ -35,7 +33,7 @@ def path_is_abs(p:str)->bool: return (len(p) > 1) and (p[0] == '/' or p[1] == ':
 
 def log(logtype:int, str_log:str)->None:
     cur_time = time.localtime()
-    msg = "[{hours}:{minutes}:{seconds}] [{type}] {msg} \n".format(type = "LOG" if logtype == 0 else "ERROR" if logtype == 1 else "WARNING",hours = cur_time.tm_hour, minutes = cur_time.tm_min, seconds = cur_time.tm_sec, msg = str_log)
+    msg = "[{hours}:{minutes}:{seconds}] [{type}] {msg} \n".format(type = "LOG" if logtype == 0 else "ERROR" if logtype == 1 else "WARNING", hours = cur_time.tm_hour, minutes = cur_time.tm_min, seconds = cur_time.tm_sec, msg = str_log)
     if log_file != None:
         log_file.write(msg)
         log_file.flush()
@@ -43,8 +41,9 @@ def log(logtype:int, str_log:str)->None:
         sys.stdout.write(msg)
         sys.stdout.flush()
         return
-    if logtype == 1: # log error and raise exception
+    if logtype == 1: # log error and exit script
         sys.stderr.write(msg)
+        sys.stderr.flush()
         revert_std()
         exit(1)
 
@@ -73,8 +72,7 @@ def is_licensed(fname, ftype: int)->bool:
             if head_tag.find("<!--") != -1:
                 if head_tag.find('Copyright (c) ') != -1 or head_tag.find('THE SOFTWARE IS PROVIDED "AS IS"') != -1: # double check if any of license info is presented in file
                     result = True
-        else:
-            log(2, 'No <head> tag in ' + fname.name)
+        else: log(2, 'No <head> tag in ' + fname.name)
     else:
         first_line:str = f.readline()
         if first_line.startswith("#"):
@@ -97,15 +95,14 @@ def process_license_in_file(p:subprocess.Popen, fname, ftype:int, comment_char_s
         with open(fname, "r+") as licensed:
             original_content = licensed.read()
             licensed.seek(0)
-            output = std_out.strip().decode('utf-8')
-            license_filled:list[str] = output.split('\r')
-            if len(license_filled) <= 1:
-                license_filled.clear()
-                license_filled = output.split('\n')
+            output:str = std_out.strip().decode('utf-8')
+            license_filled:list[str] = output.replace('\r', '').split('\n')
             if ftype != 1:
                 first_line = True
                 for line in license_filled:
-                    if not line.endswith('\n'): line += '\n'
+                    if(len(line) > 1):
+                        line += '\n'
+                    else: line = '\n'
                     if first_line and (comment_char_start == '/*' or comment_char_start == '#'):
                         first_line = False
                         f_line = licensed.readline()
@@ -113,22 +110,19 @@ def process_license_in_file(p:subprocess.Popen, fname, ftype:int, comment_char_s
                         if f_line.find('#!/') != -1:
                             licensed.write(f_line.endswith('\n') and f_line or f_line+'\n')
                             original_content = original_content.replace(f_line, '')
-                        if comment_char_start == '#':
-                            line = '# ' + line
-                            licensed.write(line.replace('\n', '\n# '))
-                        else:
-                            licensed.write(comment_char_start + ' ' + line)
+                        licensed.write(comment_char_start + ' ' + line)
                     else:
                         if comment_char_start == '#':
-                            licensed.write(line.replace('\n', '\n# '))
-                        else:
-                            licensed.write(line)
+                            if line != '\n':
+                                line = '# ' + line;
+                            else: line = '# \n'
+                            licensed.write(line);
+                        else: licensed.write(line)
                 if comment_char_end != '':
                     licensed.write(comment_char_end + '\n')
                 else: licensed.write('\n')
                 licensed.write(original_content)
                 licensed.flush()
-                licensed.close()
             else:
                 head_idx = original_content.find("<head")
                 if head_idx != -1:
@@ -139,7 +133,6 @@ def process_license_in_file(p:subprocess.Popen, fname, ftype:int, comment_char_s
                     original_content = original_content.replace("<head", licensed_str)
                     licensed.write(original_content)
                 licensed.flush()
-                licensed.close()
             added_paths.append(fname)
             log(0, 'Added license in file "{}"'.format(fname))
     except PermissionError:
@@ -151,14 +144,17 @@ def try_add_license(fname)->None:
     if ftype == 0 or ftype == 1 or ftype == 2:
         if is_licensed(fname, ftype) != True:
             comments = get_comment_by_type(ftype)
-            cmd = [ 'sh', 'render.sh',
-                '--filename="{filename}"'.format(filename = fname.path),
-                '--root_folder="{root_folder}"'.format(root_folder = project_path),
+            cmd = ['sh', './render.sh',
+                '--filename="{filename}"'.format(filename = os.path.normpath(fname.path)),
+                '--root_folder="{root_folder}"'.format(root_folder = os.path.abspath(project_path)),
                 '--year="{year}"'.format(year = str(2020)),
                 '--org_name="{org_name}"'.format(org_name = "StackSoft"),
                 license_path]
-            p = subprocess.Popen(cmd, stdout = subprocess.PIPE, stderr = subprocess.PIPE)
-            process_license_in_file(p, fname.path, ftype, comments[0], comments[1])
+            try:
+                p = subprocess.Popen(cmd, stdout = subprocess.PIPE, stderr = subprocess.PIPE)
+                process_license_in_file(p, fname.path, ftype, comments[0], comments[1])
+            except FileNotFoundError:
+                log(1, 'Module "sh" not found on this system. Exiting...')
         else: log(0, 'File "' + fname.name + '" already have license. Skipping...')
 
 def process_license(dir_path:str)->None:
@@ -185,7 +181,7 @@ def process_argument(arg_key:str, args:list[str], it: int)->str:
     return arg_key
 
 if __name__ == "__main__":
-    default_log_path = os.getcwd() + "/license.log"
+    default_log_path = os.path.normpath(os.getcwd() + "/license.log")
     log_path = ''
     it = 0
     while it < len(sys.argv):
@@ -201,34 +197,33 @@ if __name__ == "__main__":
             it += 1
             log_path = arg_pair[1]
             continue
-        if os.getcwd() + '/' + arg_pair[0] == __file__: continue
+        if os.path.basename(arg_pair[0]) == os.path.basename(__file__): continue
         project_path = arg_pair[0]
         continue
 
     locale.setlocale(locale.LC_TIME, '')
     if not log_path:
         log_path = default_log_path
-    else:
+    try:
+        if path_is_abs(log_path) == False:
+            log_path = os.path.abspath(log_path)
+        log_file = open(log_path, 'w')
+        log(0, "Log file initialized")
+    except IOError:
+        log(2, "Can't open path {err_path}, trying using default {def_path}...".format(err_path = log_path, def_path = default_log_path))
         try:
-            if path_is_abs(log_path) == False:
-                log_path = os.getcwd() + "/" + log_path
-            log_file = open(log_path, 'w')
+            log_file = open(default_log_path, 'w')
+            log(0, "Log file initialized")
         except IOError:
-            log(2, "Can't open path {err_path}, trying using default {def_path}...".format(err_path = log_path, def_path = default_log_path))
-            try:
-                log_file = open(default_log_path, 'w')
-            except IOError:
-                log(2, 'Initializing log file failed')
-                pass
+            log(2, 'Initializing log file failed')
     if license_path == '':
         license_file_path = os.getenv("LICENSE_FILE_PATH")
         if license_file_path == None or license_file_path == '':
             log(1, "License environment variable LICENSE_FILE_PATH required when -f parament not used. Exiting...")
-        else:
-            license_path = license_file_path
+        else: license_path = license_file_path
     if path_is_abs(license_path) == False:
         license_path = os.getcwd() + "/" + license_path
-    log(0, "Log file initialized")
+    
     if(is_all_paths_valid([project_path, license_path]) != True):
         log(1, 'One of the path parametrs missing or does not exist. Exiting...')
     process_license(project_path) # main recursive function
