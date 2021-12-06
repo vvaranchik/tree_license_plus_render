@@ -5,7 +5,6 @@ import locale
 import time
 import io
 import subprocess
-from re import split
 
 project_path = ''
 license_path = ''
@@ -53,33 +52,6 @@ def is_all_paths_valid(paths:list[str])->bool:
             return False
     return True
 
-def ensure_licensed(f:io.TextIOWrapper, comment_start:str='#')->bool:
-    for line in f:
-        if line.find(comment_start + ' File: "') != -1 or line.find('THE SOFTWARE IS PROVIDED "AS IS"') != -1: # try to find one of two lines of license
-            return True
-    return False
-
-def is_licensed(fname, ftype: int)->bool:
-    f = open(fname.path, "r", encoding="utf-8")
-    result:bool = False
-    if ftype == 0:
-        result = ensure_licensed(f, '/*')
-    if ftype == 1:
-        html_file:str = f.read(-1)
-        head_idx = html_file.find("<head")
-        if head_idx != -1:
-            head_tag = html_file[head_idx::]
-            if head_tag.find("<!--") != -1:
-                if head_tag.find('Copyright (c) ') != -1 or head_tag.find('THE SOFTWARE IS PROVIDED "AS IS"') != -1: # double check if any of license info is presented in file
-                    result = True
-        else: log(2, 'No <head> tag in ' + fname.name)
-    else:
-        first_line:str = f.readline()
-        if first_line.startswith("#"):
-            result = ensure_licensed(f)
-    f.close()
-    return result
-
 def get_file_type(fname)->int:
     ext = os.path.splitext(fname.name)
     if ext[1] == ".css": return 0
@@ -87,49 +59,24 @@ def get_file_type(fname)->int:
     if ext[1] == ".sh" or ext[1] == ".py": return 2
     return -1
 
-def process_license_in_file(p:subprocess.Popen, fname, ftype:int, comment_char_start:str, comment_char_end:str='')->None:
-    std_out, std_err = p.communicate()
-    if p.returncode != 0:
-        log(1, std_err.strip().decode('utf-8'))
+def add_license(license_template:str, fname:str, ftype:int)->None:
     try:
         with open(fname, "r+") as licensed:
             original_content = licensed.read()
             licensed.seek(0)
-            output:str = std_out.strip().decode('utf-8')
-            license_filled:list[str] = output.replace('\r', '').split('\n')
             if ftype != 1:
-                first_line = True
-                for line in license_filled:
-                    if(len(line) > 1):
-                        line += '\n'
-                    else: line = '\n'
-                    if first_line and (comment_char_start == '/*' or comment_char_start == '#'):
-                        first_line = False
-                        f_line = licensed.readline()
-                        licensed.seek(0)
-                        if f_line.find('#!/') != -1:
-                            licensed.write(f_line.endswith('\n') and f_line or f_line+'\n')
-                            original_content = original_content.replace(f_line, '')
-                        licensed.write(comment_char_start + ' ' + line)
-                    else:
-                        if comment_char_start == '#':
-                            if line != '\n':
-                                line = '# ' + line;
-                            else: line = '# \n'
-                            licensed.write(line);
-                        else: licensed.write(line)
-                if comment_char_end != '':
-                    licensed.write(comment_char_end + '\n')
-                else: licensed.write('\n')
+                f_line = licensed.readline()
+                licensed.seek(0)
+                if f_line.find('#!/') != -1:
+                    licensed.write(f_line.endswith('\n') and f_line or f_line+'\n')
+                    original_content = original_content.replace(f_line, '')
+                licensed.write(license_template)
                 licensed.write(original_content)
                 licensed.flush()
             else:
                 head_idx = original_content.find("<head")
                 if head_idx != -1:
-                    licensed_str = '<head ' + comment_char_start + '\n'
-                    for line in license_filled:
-                        licensed_str += line.endswith('\n') == True and line or (line + '\n')  
-                    licensed_str += comment_char_end + '\n'
+                    licensed_str = '<head ' + license_template
                     original_content = original_content.replace("<head", licensed_str)
                     licensed.write(original_content)
                 licensed.flush()
@@ -138,24 +85,61 @@ def process_license_in_file(p:subprocess.Popen, fname, ftype:int, comment_char_s
     except PermissionError:
         log(2, "Can't edit file {} (Permission denied)".format(fname))
 
+def get_license_template(p:subprocess.Popen, ftype:int, comment_start_char = '', comment_end_char = '')->str:
+    std_out, std_err = p.communicate()
+    if p.returncode != 0:
+        log(1, std_err.strip().decode('utf-8'))
+    template_lines:list[str] = std_out.strip().decode('utf-8').replace('\r', '').split('\n')
+    template = ''
+    if ftype != 1:
+        first_line = True
+        for line in template_lines:
+            if(len(line) > 1):
+                line += '\n'
+            else: line = '\n'
+            if first_line:
+                first_line = False
+                if comment_start_char == '#': template += comment_start_char + ' ' + line
+                else: template += comment_start_char + '\n' + line
+            else:
+                if comment_start_char == '#':
+                    if line != '\n': template += '# ' + line;
+                    else: template += '# \n';
+                else: template += line
+        if comment_end_char != '': template += comment_end_char + '\n'
+        else: template += '\n'
+    else:
+        template += comment_start_char + '\n'
+        for line in template_lines:
+            template += line + '\n'
+        template += comment_end_char + '\n'
+    return template
+
+def is_file_has_license(license_template:str, fname, ftype:int, comment_start_char = '')->bool:
+    tmp = ''
+    with open(fname, 'r') as reader:
+        for line in reader.read().replace('\r', '').split('\n'):
+            tmp += line + '\n'
+    return tmp.find(license_template) != -1
 
 def try_add_license(fname)->None:
     ftype = get_file_type(fname)
     if ftype == 0 or ftype == 1 or ftype == 2:
-        if is_licensed(fname, ftype) != True:
-            comments = get_comment_by_type(ftype)
-            cmd = ['sh', 'render.sh',
+        cmd = ['sh', 'render.sh',
                 '--filename="{filename}"'.format(filename = os.path.normpath(fname.path)),
                 '--root_folder="{root_folder}"'.format(root_folder = os.path.abspath(project_path)),
                 '--year="{year}"'.format(year = str(2020)),
                 '--org_name="{org_name}"'.format(org_name = "StackSoft"),
                 license_path]
-            try:
-                p = subprocess.Popen(cmd, stdout = subprocess.PIPE, stderr = subprocess.PIPE)
-                process_license_in_file(p, fname.path, ftype, comments[0], comments[1])
-            except FileNotFoundError:
-                log(1, 'Module "sh" not found on this system. Exiting...')
-        else: log(0, 'File "' + fname.name + '" already have license. Skipping...')
+        try:
+            p = subprocess.Popen(cmd, stdout = subprocess.PIPE, stderr = subprocess.PIPE)
+            comments = get_comment_by_type(ftype)
+            license_template = get_license_template(p, ftype, comments[0], comments[1])
+            if not is_file_has_license(license_template, fname.path, ftype, comments[0]):
+                add_license(license_template, fname.path, ftype)
+            else: log(0, 'File "' + fname.name + '" already have license. Skipping...')
+        except FileNotFoundError:
+            log(1, 'Module "sh" not found on this system. Exiting...')
 
 def process_license(dir_path:str)->None:
     dirs: list = list()
