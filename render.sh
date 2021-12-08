@@ -24,7 +24,6 @@ function get_abs_filename() {
   echo "$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"
 }
 
-#process_arg "--filename=worker" "--year=2021" "--org_name=StackSoft" "--root_project=/path/to/project/" "/path/to/license/"
 tmp=""
 for i in "$@"; do
         case $i in
@@ -70,26 +69,14 @@ for i in "$@"; do
     esac
 done
 
-#echo "${_year}"
-#echo "${_org_name}"
-#echo "${_root}"
-#echo "${_license}"
-#echo "${_filename}"
-
 isabs=$(is_abs "${_license}")
-#echo "${isabs}"
 if [ $isabs -ne 1 ];then
     _license=$(get_abs_filename $_license)
 fi
-#echo $_license
 if [ -f $_license ];then
     license_content=`cat ${_license}`
-    #echo "$license_content"
-    license_content=$(echo "$license_content" | sed "s%{filename}%${_filename}%g")
-    license_content=$(echo "$license_content" | sed "s%{year}%${_year}%g")
-    license_content=$(echo "$license_content" | sed "s%{org_name}%${_org_name}%g")
-    license_content=$(echo "$license_content" | sed "s%{root_folder}%${_root}%g")
-    license_content=$(echo "$license_content" | tr -d '$')
+    license_content=$(echo "$license_content" | sed "s%{filename}%${_filename}%g" | sed "s%{year}%${_year}%g"\
+        | sed "s%{org_name}%${_org_name}%g" | sed "s%{root_folder}%${_root}%g" | tr -d '$')
     echo "${license_content}"
 else
     echo "License file '${_license}' not exist or license path was empty" 1>&2
